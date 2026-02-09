@@ -184,32 +184,38 @@
 
         let fallbackCounter = Number(localStorage.getItem('cropperFallbackCounter')) || 1;
 
-        // CHECK MEDIAN / MOBILE
+        // HELPER TO CHECK MEDIAN ENVIRONMENT
         const isMedian = navigator.userAgent.indexOf('Median') > -1 || navigator.userAgent.indexOf('gonative') > -1;
-        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        const isPC = !isMobile;
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-        const hasDirectoryPicker = 'showDirectoryPicker' in window;
 
-        // REQUEST PERMISSIONS ON LOAD (FOR MEDIAN)
+        // 1. REQUEST PERMISSIONS ON LOAD (FOR MEDIAN/GONATIVE)
         if (isMedian) {
+            // Function to check and request permissions
             function requestStoragePermission() {
                 if (window.gonative && window.gonative.android && window.gonative.android.requestPermissions) {
                     window.gonative.android.requestPermissions({
-                        permissions: ["android.permission.WRITE_EXTERNAL_STORAGE", "android.permission.READ_EXTERNAL_STORAGE"]
+                        permissions: [
+                            "android.permission.WRITE_EXTERNAL_STORAGE", 
+                            "android.permission.READ_EXTERNAL_STORAGE"
+                        ]
                     });
                 }
             }
+            // Attempt immediately and after short delay to ensure bridge is ready
             requestStoragePermission();
             setTimeout(requestStoragePermission, 2000);
         }
 
         const setStatus = (instruction = '') => {
             const base = currentFileDisplay || "Tap 📂 or 📷 to begin";
-            const parts = [base, instruction].filter(Boolean);
+            const folderInfo = (isPC && directoryHandle) ? `Saving to: ${directoryHandle.name}` : '';
+            const parts = [base, folderInfo, instruction].filter(Boolean);
             status.textContent = parts.length ? parts.join(' — ') : "Tap 📂 or 📷 to begin";
         };
 
+        const isPC = !/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const hasDirectoryPicker = 'showDirectoryPicker' in window;
+        
         if (isPC) {
             clearSidebarBtn.style.display = 'none';
         } else {
@@ -454,7 +460,7 @@
         if (clearBtn) clearBtn.onclick = clearAll;
         clearSidebarBtn.onclick = clearAll;
 
-        // --- FINAL FIXED SAVE LOGIC (PRIORITIZE SHARE) ---
+        // --- ROBUST SAVE LOGIC FOR MEDIAN/GONATIVE ---
         saveBtn.onclick = async () => {
             if (!selectRect) return;
             setStatus("Preparing image...");
@@ -465,67 +471,73 @@
             const tctx = tmp.getContext('2d');
             tctx.drawImage(mainCanvas, selectRect.x, selectRect.y, selectRect.w, selectRect.h, 0, 0, selectRect.w, selectRect.h);
 
-            // 1. MOBILE/APP: Force "Share" Menu (The only way to "Ask where to save" on Android Apps)
-            if (isMobile || isMedian) {
+            // 1. MEDIAN/GONATIVE APP METHOD
+            if (isMedian) {
                 try {
-                    const dataUrl = tmp.toDataURL('image/png');
-                    
-                    // A. Try Median Native Share (Best for GoNative apps)
+                    // Check if the Bridge is ready
                     if (window.gonative && window.gonative.share) {
-                        window.gonative.share.shareImage({ "image": dataUrl });
-                        setStatus("Opened Share Menu");
-                        cleanupSave();
-                        return;
-                    } 
-                    
-                    // B. Try Web Share API (Standard Android Chrome/Apps)
-                    if (navigator.share) {
-                        const blob = await (await fetch(dataUrl)).blob();
-                        const file = new File([blob], `${fallbackCounter}.png`, { type: 'image/png' });
-                        await navigator.share({
-                            files: [file],
-                            title: 'Save Image'
+                        const dataUrl = tmp.toDataURL('image/png');
+                        // IMPORTANT: Send JUST the base64 data to avoid URL limits
+                        // Strip the "data:image/png;base64," prefix for clean handling if needed,
+                        // but generally shareImage handles the full string object better.
+                        
+                        window.gonative.share.shareImage({
+                            "image": dataUrl
                         });
-                        setStatus("Opened Share Menu");
-                        cleanupSave();
+                        
+                        setStatus("Opening Share/Save menu...");
+                        
+                        // Cleanup UI
+                        selectRect = null;
+                        saveBtn.disabled = true;
+                        autoRefresh();
+                        setPanMode();
+                        return;
+                    } else {
+                        // Bridge not ready, fallback to permission request then retry?
+                        // Or try the URL scheme one last time with a warning
+                        console.log("GoNative Bridge not found, attempting URL scheme...");
+                        const dataUrl = tmp.toDataURL('image/png');
+                        window.location.href = 'gonative://share/shareImage?image=' + encodeURIComponent(dataUrl);
                         return;
                     }
-
-                    // C. Fallback to direct download if Share fails (better than nothing)
-                    throw new Error("No share available");
-
                 } catch (e) {
-                    console.log("Share failed, falling back to download", e);
-                    // Fallthrough to download below
+                    console.error("Median app save error", e);
+                    setStatus("App Save Error");
                 }
             }
 
+            // 2. PC: Advanced Folder Save
             let blob;
             try {
                 blob = await new Promise(resolve => tmp.toBlob(resolve, 'image/png'));
             } catch (err) { setStatus("Error creating blob"); return; }
 
-            // 2. PC ONLY: Use "Save As" Picker (Does not work on Mobile)
-            if (isPC && 'showSaveFilePicker' in window) {
+            if (isPC && 'showDirectoryPicker' in window) {
                 try {
-                    const handle = await window.showSaveFilePicker({
-                        suggestedName: `${fallbackCounter}.png`,
-                        types: [{ description: 'PNG Image', accept: {'image/png': ['.png']} }],
-                    });
-                    const writable = await handle.createWritable();
+                    if (!directoryHandle) {
+                        setStatus("Please select a folder...");
+                        directoryHandle = await window.showDirectoryPicker({
+                            mode: 'readwrite', id: 'cropper_pc_save', startIn: 'pictures'
+                        });
+                    }
+                    let num = 1, fileName = '';
+                    while (true) {
+                        fileName = `${num}.png`;
+                        try { await directoryHandle.getFileHandle(fileName); num++; } 
+                        catch (e) { break; }
+                    }
+                    const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+                    const writable = await fileHandle.createWritable();
                     await writable.write(blob);
                     await writable.close();
-                    setStatus("Saved!");
-                    cleanupSave();
-                    return;
-                } catch (err) {
-                    // Ignore cancel, log other errors
-                    if (err.name !== 'AbortError') console.error(err);
+                    setStatus(`Saved: ${fileName}`);
+                    selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
                     return; 
-                }
+                } catch (err) { if (err.name !== 'AbortError') console.log(err); }
             }
-            
-            // 3. LAST RESORT: Direct Download
+
+            // 3. FALLBACK: Direct Download
             try {
                 let fileName = `${fallbackCounter}.png`;
                 const a = document.createElement('a');
@@ -540,22 +552,15 @@
                 document.body.removeChild(a);
                 if (!isIOS) URL.revokeObjectURL(url);
 
+                fallbackCounter++;
+                localStorage.setItem('cropperFallbackCounter', fallbackCounter);
                 setStatus(`Downloaded: ${fileName}`);
-                cleanupSave();
+                selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
             } catch (err) {
                 console.error('Save error:', err);
                 setStatus("Save failed");
             }
         };
-
-        function cleanupSave() {
-            fallbackCounter++;
-            localStorage.setItem('cropperFallbackCounter', fallbackCounter);
-            selectRect = null; 
-            saveBtn.disabled = true; 
-            autoRefresh(); 
-            setPanMode();
-        }
         // --- END SAVE LOGIC ---
 
         function setPanMode() { mode = 'none'; setActiveUI('pan'); setStatus("Pan Mode"); }
