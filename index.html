@@ -184,10 +184,14 @@
 
         let fallbackCounter = Number(localStorage.getItem('cropperFallbackCounter')) || 1;
 
-        // HELPER TO CHECK MEDIAN ENVIRONMENT
+        // CHECK MEDIAN / MOBILE
         const isMedian = navigator.userAgent.indexOf('Median') > -1 || navigator.userAgent.indexOf('gonative') > -1;
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        const isPC = !isMobile;
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const hasDirectoryPicker = 'showDirectoryPicker' in window;
 
-        // REQUEST PERMISSIONS ON LOAD (FOR MEDIAN/GONATIVE)
+        // REQUEST PERMISSIONS ON LOAD (FOR MEDIAN)
         if (isMedian) {
             function requestStoragePermission() {
                 if (window.gonative && window.gonative.android && window.gonative.android.requestPermissions) {
@@ -202,15 +206,10 @@
 
         const setStatus = (instruction = '') => {
             const base = currentFileDisplay || "Tap 📂 or 📷 to begin";
-            // No longer showing directoryHandle name as we are "asking" every time
             const parts = [base, instruction].filter(Boolean);
             status.textContent = parts.length ? parts.join(' — ') : "Tap 📂 or 📷 to begin";
         };
 
-        const isPC = !/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-        const hasDirectoryPicker = 'showDirectoryPicker' in window;
-        
         if (isPC) {
             clearSidebarBtn.style.display = 'none';
         } else {
@@ -455,7 +454,7 @@
         if (clearBtn) clearBtn.onclick = clearAll;
         clearSidebarBtn.onclick = clearAll;
 
-        // --- UPDATED SAVE LOGIC: ALWAYS ASK ---
+        // --- FINAL FIXED SAVE LOGIC (PRIORITIZE SHARE) ---
         saveBtn.onclick = async () => {
             if (!selectRect) return;
             setStatus("Preparing image...");
@@ -466,16 +465,39 @@
             const tctx = tmp.getContext('2d');
             tctx.drawImage(mainCanvas, selectRect.x, selectRect.y, selectRect.w, selectRect.h, 0, 0, selectRect.w, selectRect.h);
 
-            // 1. MEDIAN/GONATIVE: Open "Share" sheet
-            if (isMedian && window.gonative && window.gonative.share) {
+            // 1. MOBILE/APP: Force "Share" Menu (The only way to "Ask where to save" on Android Apps)
+            if (isMobile || isMedian) {
                 try {
                     const dataUrl = tmp.toDataURL('image/png');
-                    window.gonative.share.shareImage({ "image": dataUrl });
                     
-                    setStatus("Check Share/Save menu...");
-                    selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
-                    return;
-                } catch (e) { console.error(e); }
+                    // A. Try Median Native Share (Best for GoNative apps)
+                    if (window.gonative && window.gonative.share) {
+                        window.gonative.share.shareImage({ "image": dataUrl });
+                        setStatus("Opened Share Menu");
+                        cleanupSave();
+                        return;
+                    } 
+                    
+                    // B. Try Web Share API (Standard Android Chrome/Apps)
+                    if (navigator.share) {
+                        const blob = await (await fetch(dataUrl)).blob();
+                        const file = new File([blob], `${fallbackCounter}.png`, { type: 'image/png' });
+                        await navigator.share({
+                            files: [file],
+                            title: 'Save Image'
+                        });
+                        setStatus("Opened Share Menu");
+                        cleanupSave();
+                        return;
+                    }
+
+                    // C. Fallback to direct download if Share fails (better than nothing)
+                    throw new Error("No share available");
+
+                } catch (e) {
+                    console.log("Share failed, falling back to download", e);
+                    // Fallthrough to download below
+                }
             }
 
             let blob;
@@ -483,53 +505,27 @@
                 blob = await new Promise(resolve => tmp.toBlob(resolve, 'image/png'));
             } catch (err) { setStatus("Error creating blob"); return; }
 
-            // 2. PC/ANDROID (Supported Browsers): Use "Save As" Picker
-            // This forces the "Where to save" dialog every time
-            if ('showSaveFilePicker' in window) {
+            // 2. PC ONLY: Use "Save As" Picker (Does not work on Mobile)
+            if (isPC && 'showSaveFilePicker' in window) {
                 try {
                     const handle = await window.showSaveFilePicker({
                         suggestedName: `${fallbackCounter}.png`,
-                        types: [{
-                            description: 'PNG Image',
-                            accept: {'image/png': ['.png']},
-                        }],
+                        types: [{ description: 'PNG Image', accept: {'image/png': ['.png']} }],
                     });
                     const writable = await handle.createWritable();
                     await writable.write(blob);
                     await writable.close();
-                    
                     setStatus("Saved!");
-                    fallbackCounter++;
-                    localStorage.setItem('cropperFallbackCounter', fallbackCounter);
-                    selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
+                    cleanupSave();
                     return;
                 } catch (err) {
+                    // Ignore cancel, log other errors
                     if (err.name !== 'AbortError') console.error(err);
-                    else { setStatus("Save cancelled"); return; }
+                    return; 
                 }
             }
             
-            // 3. MOBILE WEB SHARE: Try to use Web Share API to "Save to Files"
-            if (navigator.share) {
-                const file = new File([blob], `${fallbackCounter}.png`, { type: 'image/png' });
-                try {
-                    await navigator.share({
-                        files: [file],
-                        title: 'Save Cropped Image',
-                    });
-                     // Success
-                    fallbackCounter++;
-                    localStorage.setItem('cropperFallbackCounter', fallbackCounter);
-                    selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
-                    return;
-                } catch (err) {
-                     console.log("Share failed/cancelled", err);
-                     // If share fails, fall through to download
-                }
-            }
-
-            // 4. FALLBACK: Direct Download 
-            // (If browser settings are "Ask where to save", this will ask. If "Auto", it downloads)
+            // 3. LAST RESORT: Direct Download
             try {
                 let fileName = `${fallbackCounter}.png`;
                 const a = document.createElement('a');
@@ -544,15 +540,22 @@
                 document.body.removeChild(a);
                 if (!isIOS) URL.revokeObjectURL(url);
 
-                fallbackCounter++;
-                localStorage.setItem('cropperFallbackCounter', fallbackCounter);
                 setStatus(`Downloaded: ${fileName}`);
-                selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
+                cleanupSave();
             } catch (err) {
                 console.error('Save error:', err);
                 setStatus("Save failed");
             }
         };
+
+        function cleanupSave() {
+            fallbackCounter++;
+            localStorage.setItem('cropperFallbackCounter', fallbackCounter);
+            selectRect = null; 
+            saveBtn.disabled = true; 
+            autoRefresh(); 
+            setPanMode();
+        }
         // --- END SAVE LOGIC ---
 
         function setPanMode() { mode = 'none'; setActiveUI('pan'); setStatus("Pan Mode"); }
