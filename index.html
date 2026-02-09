@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -10,7 +10,6 @@
         canvas { position: absolute; top: 0; left: 0; touch-action: none; }
         #overlayCanvas { pointer-events: none; z-index: 5; }
         
-        /* STATUS POSITIONED LEFT DOWN */
         #status {
             position: absolute; bottom: 10px; left: 60px; background: rgba(0,0,0,0.7); 
             color: white; padding: 6px 12px; font-size: 12px; border-radius: 4px; 
@@ -185,9 +184,29 @@
 
         let fallbackCounter = Number(localStorage.getItem('cropperFallbackCounter')) || 1;
 
+        // HELPER TO CHECK MEDIAN ENVIRONMENT
+        const isMedian = navigator.userAgent.indexOf('Median') > -1 || navigator.userAgent.indexOf('gonative') > -1;
+
+        // 1. REQUEST PERMISSIONS ON LOAD (FOR MEDIAN/GONATIVE)
+        if (isMedian) {
+            // Function to check and request permissions
+            function requestStoragePermission() {
+                if (window.gonative && window.gonative.android && window.gonative.android.requestPermissions) {
+                    window.gonative.android.requestPermissions({
+                        permissions: [
+                            "android.permission.WRITE_EXTERNAL_STORAGE", 
+                            "android.permission.READ_EXTERNAL_STORAGE"
+                        ]
+                    });
+                }
+            }
+            // Attempt immediately and after short delay to ensure bridge is ready
+            requestStoragePermission();
+            setTimeout(requestStoragePermission, 2000);
+        }
+
         const setStatus = (instruction = '') => {
             const base = currentFileDisplay || "Tap 📂 or 📷 to begin";
-            // Only show folder info if on PC/Supported browser
             const folderInfo = (isPC && directoryHandle) ? `Saving to: ${directoryHandle.name}` : '';
             const parts = [base, folderInfo, instruction].filter(Boolean);
             status.textContent = parts.length ? parts.join(' — ') : "Tap 📂 or 📷 to begin";
@@ -197,10 +216,6 @@
         const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
         const hasDirectoryPicker = 'showDirectoryPicker' in window;
         
-        // DETECT MEDIAN / GONATIVE APP
-        const isMedian = navigator.userAgent.indexOf('Median') > -1 || navigator.userAgent.indexOf('gonative') > -1;
-
-        // Clear buttons logic: top clear on PC only, sidebar clear on mobile only
         if (isPC) {
             clearSidebarBtn.style.display = 'none';
         } else {
@@ -445,7 +460,7 @@
         if (clearBtn) clearBtn.onclick = clearAll;
         clearSidebarBtn.onclick = clearAll;
 
-        // --- SPECIAL SAVE LOGIC FOR MEDIAN/APP ---
+        // --- ROBUST SAVE LOGIC FOR MEDIAN/GONATIVE ---
         saveBtn.onclick = async () => {
             if (!selectRect) return;
             setStatus("Preparing image...");
@@ -456,22 +471,39 @@
             const tctx = tmp.getContext('2d');
             tctx.drawImage(mainCanvas, selectRect.x, selectRect.y, selectRect.w, selectRect.h, 0, 0, selectRect.w, selectRect.h);
 
-            // 1. Check if running in Median/GoNative App
+            // 1. MEDIAN/GONATIVE APP METHOD
             if (isMedian) {
                 try {
-                    const dataUrl = tmp.toDataURL('image/png');
-                    // Trigger Native Share/Save Dialog
-                    // This bypasses the blocked "Blob" download in WebView
-                    window.location.href = 'gonative://share/shareImage?image=' + encodeURIComponent(dataUrl);
-                    
-                    setStatus("Image sent to Share/Save menu");
-                    selectRect = null;
-                    saveBtn.disabled = true;
-                    autoRefresh();
-                    setPanMode();
-                    return;
+                    // Check if the Bridge is ready
+                    if (window.gonative && window.gonative.share) {
+                        const dataUrl = tmp.toDataURL('image/png');
+                        // IMPORTANT: Send JUST the base64 data to avoid URL limits
+                        // Strip the "data:image/png;base64," prefix for clean handling if needed,
+                        // but generally shareImage handles the full string object better.
+                        
+                        window.gonative.share.shareImage({
+                            "image": dataUrl
+                        });
+                        
+                        setStatus("Opening Share/Save menu...");
+                        
+                        // Cleanup UI
+                        selectRect = null;
+                        saveBtn.disabled = true;
+                        autoRefresh();
+                        setPanMode();
+                        return;
+                    } else {
+                        // Bridge not ready, fallback to permission request then retry?
+                        // Or try the URL scheme one last time with a warning
+                        console.log("GoNative Bridge not found, attempting URL scheme...");
+                        const dataUrl = tmp.toDataURL('image/png');
+                        window.location.href = 'gonative://share/shareImage?image=' + encodeURIComponent(dataUrl);
+                        return;
+                    }
                 } catch (e) {
                     console.error("Median app save error", e);
+                    setStatus("App Save Error");
                 }
             }
 
@@ -505,7 +537,7 @@
                 } catch (err) { if (err.name !== 'AbortError') console.log(err); }
             }
 
-            // 3. FALLBACK: Direct Download (Standard Browser / Non-Median Mobile)
+            // 3. FALLBACK: Direct Download
             try {
                 let fileName = `${fallbackCounter}.png`;
                 const a = document.createElement('a');
