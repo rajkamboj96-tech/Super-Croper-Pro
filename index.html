@@ -1,0 +1,553 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Compact Mobile Cropper Pro</title>
+    <style>
+        body { margin: 0; height: 100vh; overflow: hidden; background: #1a1a1a; font-family: sans-serif; }
+        #viewer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; overflow: hidden; }
+        canvas { position: absolute; top: 0; left: 0; touch-action: none; }
+        #overlayCanvas { pointer-events: none; z-index: 5; }
+        
+        /* STATUS POSITIONED LEFT DOWN */
+        #status {
+            position: absolute; bottom: 10px; left: 60px; background: rgba(0,0,0,0.7); 
+            color: white; padding: 6px 12px; font-size: 12px; border-radius: 4px; 
+            z-index: 30; transition: opacity 0.3s; pointer-events: none;
+        }
+
+        #signature {
+            position: absolute; bottom: 5px; right: 10px; color: rgba(255,255,255,0.6);
+            font-size: 10px; z-index: 40; pointer-events: none;
+        }
+
+        #toggleBtn {
+            position: absolute; top: 5px; left: 5px; width: 30px; height: 30px;
+            border-radius: 4px; border: 1px solid #444; background: #222;
+            color: #aaa; font-size: 7px; font-weight: bold; cursor: pointer;
+            z-index: 110; display: flex; align-items: center; justify-content: center;
+        }
+
+        #colorIndicator {
+            position: absolute; top: 5px; left: 40px; width: 30px; height: 30px;
+            border-radius: 4px; border: 2px solid #000; background: transparent;
+            z-index: 110; display: none; box-sizing: border-box;
+            box-shadow: 0 0 0 1px #fff;
+        }
+        
+        .slider-container {
+            position: absolute; top: 5px; height: 30px;
+            background: rgba(34, 34, 34, 0.9); border-radius: 4px;
+            padding: 0 8px; display: flex; align-items: center; z-index: 110;
+            color: white; font-size: 8px; gap: 5px;
+        }
+        #leftSliderBox { left: 75px; } 
+        #rightSliderBox { right: 80px; } 
+        
+        input[type="range"] { width: 60px; height: 4px; cursor: pointer; }
+
+        #prevBtn, #nextBtn, #resetBtn, #sidebar button {
+            width: 41px; height: 41px; border-radius: 50%; border: none;
+            display: flex; align-items: center; justify-content: center; cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+        }
+
+        #prevBtn, #nextBtn, #resetBtn { position: absolute; left: 10px; z-index: 110; }
+        #prevBtn { bottom: 155px; background: #FF9800; }
+        #nextBtn { bottom: 100px; background: #FF9800; }
+        #resetBtn { bottom: 45px; background: #F44336; }
+
+        #saveBtn, #folderBtn, #clearBtn {
+            position: absolute; top: 10px; width: 55px; height: 55px;
+            border-radius: 50%; border: 2px solid #fff;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5); color: white; z-index: 100;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+        #saveBtn { right: 10px; background: linear-gradient(135deg, #4CAF50, #1B5E20); }
+        #folderBtn { right: 75px; background: linear-gradient(135deg, #9C27B0, #6A1B9A); }
+        #clearBtn { right: 140px; background: #9E9E9E; }
+
+        #sidebar {
+            position: absolute; left: 10px; top: 50px; height: auto; width: 50px;
+            display: flex; flex-direction: column; gap: 8px;
+            align-items: center; z-index: 20; pointer-events: none;
+        }
+        #sidebar button { pointer-events: all; }
+
+        /* MOBILE OPTIMIZATION */
+        @media (max-width: 768px) {
+            #prevBtn, #nextBtn, #resetBtn, #sidebar button { width: 35px; height: 35px; }
+            #saveBtn { width: 47px; height: 47px; }
+            #clearBtn { display: none; }
+            #folderBtn { display: none; }
+            .icon { font-size: 17px; }
+            #sidebar { width: 42px; left: 8px; }
+            #prevBtn, #nextBtn, #resetBtn { left: 8px; }
+            #status { left: 50px; bottom: 8px; font-size: 10px; }
+        }
+
+        .icon { font-size: 20px; color: white; }
+        #openBtn { background: #673AB7; }
+        #cameraBtn { background: #00bcd4; }
+        #panBtn { background: #4caf50; }
+        #cropBtn { background: #2196F3; }
+        #boxEraseBtn { background: #FF5722; }
+        #circleEraseBtn { background: #E91E63; }
+        #undoBtn { background: #607D8B; }
+        #clearSidebarBtn { background: #9E9E9E; }
+
+        .active-tool { background: #ff0000 !important; border: 2px solid white !important; }
+        .hidden-ui { opacity: 0 !important; pointer-events: none !important; }
+        button:disabled { opacity: 0.2; filter: grayscale(1); }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.0.379/pdf.min.js"></script>
+</head>
+<body>
+    <div id="viewer">
+        <canvas id="mainCanvas"></canvas>
+        <canvas id="overlayCanvas"></canvas>
+        <div id="status">Tap 📂 or 📷 to begin</div>
+    </div>
+
+    <div id="signature">Made By-Raj Kamboj 9465428299</div>
+
+    <button id="toggleBtn">HIDE</button>
+    <div id="colorIndicator"></div>
+    
+    <div id="leftSliderBox" class="slider-container">
+        Size: <input type="range" id="brushSlider" min="1" max="200" value="30">
+    </div>
+    <div id="rightSliderBox" class="slider-container">
+        Stick: <input type="range" id="stickSlider" min="0" max="250" value="0">
+    </div>
+
+    <button id="prevBtn" title="Previous Image"><span class="icon">◀</span></button>
+    <button id="nextBtn" title="Next Image"><span class="icon">▶</span></button>
+    <button id="resetBtn" title="Reset Canvas"><span class="icon">🔄</span></button>
+
+    <button id="clearBtn" title="Clear All"><span class="icon">🧹</span><span style="font-size:7px">CLEAR</span></button>
+    <button id="folderBtn"><span class="icon">📁</span><span style="font-size:7px">FOLDER</span></button>
+    <button id="saveBtn" disabled><span class="icon">💾</span><span style="font-size:7px">SAVE</span></button>
+
+    <div id="sidebar">
+        <button id="openBtn" title="Open Files"><span class="icon">📂</span></button>
+        <button id="cameraBtn" title="Camera"><span class="icon">📷</span></button>
+        <button id="panBtn" title="Pan Mode" class="active-tool"><span class="icon">✋</span></button>
+        <button id="cropBtn" title="Crop Tool"><span class="icon">✂️</span></button>
+        <button id="boxEraseBtn" title="Box Eraser"><span class="icon">⬛</span></button>
+        <button id="circleEraseBtn" title="Brush Eraser"><span class="icon">🖌️</span></button>
+        <button id="undoBtn" disabled title="Undo"><span class="icon">↺</span></button>
+        <button id="clearSidebarBtn" title="Clear All"><span class="icon">🧹</span></button>
+    </div>
+
+    <input type="file" id="fileInput" accept="image/*,.pdf" style="display:none;" multiple>
+    <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none;">
+
+    <script>
+        const viewer = document.getElementById('viewer');
+        const mainCanvas = document.getElementById('mainCanvas');
+        const overlayCanvas = document.getElementById('overlayCanvas');
+        const ctx = mainCanvas.getContext('2d', { willReadFrequently: true });
+        const octx = overlayCanvas.getContext('2d');
+        const fileInput = document.getElementById('fileInput');
+        const cameraInput = document.getElementById('cameraInput');
+        const saveBtn = document.getElementById('saveBtn');
+        const folderBtn = document.getElementById('folderBtn');
+        const clearBtn = document.getElementById('clearBtn');
+        const clearSidebarBtn = document.getElementById('clearSidebarBtn');
+        const sidebar = document.getElementById('sidebar');
+        const status = document.getElementById('status');
+        const toggleBtn = document.getElementById('toggleBtn');
+        const colorIndicator = document.getElementById('colorIndicator');
+        const brushSlider = document.getElementById('brushSlider');
+        const stickSlider = document.getElementById('stickSlider');
+        const resetBtn = document.getElementById('resetBtn');
+        const prevBtn = document.getElementById('prevBtn');
+        const nextBtn = document.getElementById('nextBtn');
+        
+        const toolButtons = {
+            pan: document.getElementById('panBtn'),
+            crop: document.getElementById('cropBtn'),
+            erase: document.getElementById('boxEraseBtn'),
+            brush: document.getElementById('circleEraseBtn')
+        };
+        
+        let currentScale = 1, panX = 0, panY = 0;
+        let mode = 'none', isDrawing = false, isPanning = false;
+        let startX = 0, startY = 0, selectRect = null;
+        let lastPanX = 0, lastPanY = 0, lastTouchDist = 0, isPinching = false;
+        let history = [], originalImageData = null, eraserColor = '#ffffff';
+        let imageQueue = [];
+        let currentIndex = 0;
+        let directoryHandle = null; 
+        let currentFileDisplay = '';
+
+        let fallbackCounter = Number(localStorage.getItem('cropperFallbackCounter')) || 1;
+
+        const setStatus = (instruction = '') => {
+            const base = currentFileDisplay || "Tap 📂 or 📷 to begin";
+            // Only show folder info if on PC/Supported browser
+            const folderInfo = (isPC && directoryHandle) ? `Saving to: ${directoryHandle.name}` : '';
+            const parts = [base, folderInfo, instruction].filter(Boolean);
+            status.textContent = parts.length ? parts.join(' — ') : "Tap 📂 or 📷 to begin";
+        };
+
+        const isPC = !/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const hasDirectoryPicker = 'showDirectoryPicker' in window;
+        
+        // DETECT MEDIAN / GONATIVE APP
+        const isMedian = navigator.userAgent.indexOf('Median') > -1 || navigator.userAgent.indexOf('gonative') > -1;
+
+        // Clear buttons logic: top clear on PC only, sidebar clear on mobile only
+        if (isPC) {
+            clearSidebarBtn.style.display = 'none';
+        } else {
+            clearSidebarBtn.style.display = 'flex';
+        }
+
+        if (isPC) {
+            stickSlider.value = 0;
+            document.getElementById('rightSliderBox').style.display = 'none';
+            if (hasDirectoryPicker) folderBtn.style.display = 'flex';
+        }
+
+        function setActiveUI(activeKey) {
+            Object.keys(toolButtons).forEach(key => {
+                if (key === activeKey) toolButtons[key].classList.add('active-tool');
+                else toolButtons[key].classList.remove('active-tool');
+            });
+        }
+
+        toggleBtn.onclick = () => {
+            const isHidden = sidebar.classList.toggle('hidden-ui');
+            saveBtn.classList.toggle('hidden-ui');
+            folderBtn.classList.toggle('hidden-ui');
+            clearBtn.classList.toggle('hidden-ui');
+            document.getElementById('leftSliderBox').classList.toggle('hidden-ui');
+            if (!isPC) document.getElementById('rightSliderBox').classList.toggle('hidden-ui');
+            status.classList.toggle('hidden-ui');
+            toggleBtn.innerHTML = isHidden ? "SHOW" : "HIDE";
+        };
+
+        async function loadImageFromQueue(index) {
+            if (index < 0 || index >= imageQueue.length) return;
+            currentIndex = index;
+            const file = imageQueue[index];
+            autoRefresh();
+            history = [];
+            document.getElementById('undoBtn').disabled = true;
+
+            currentFileDisplay = file.name;
+            if (imageQueue.length > 1) {
+                currentFileDisplay += ` (${currentIndex + 1}/${imageQueue.length})`;
+            }
+            setStatus();
+
+            if (file.type === 'application/pdf') {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                const page = await pdf.getPage(1);
+                const viewport = page.getViewport({ scale: 3.0 });
+                mainCanvas.width = overlayCanvas.width = viewport.width;
+                mainCanvas.height = overlayCanvas.height = viewport.height;
+                await page.render({ canvasContext: ctx, viewport }).promise;
+                originalImageData = ctx.getImageData(0, 0, mainCanvas.width, mainCanvas.height);
+            } else {
+                const img = new Image();
+                img.onload = () => {
+                    mainCanvas.width = overlayCanvas.width = img.width;
+                    mainCanvas.height = overlayCanvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    originalImageData = ctx.getImageData(0, 0, img.width, img.height);
+                    fitToScreen();
+                    setPanMode();
+                };
+                img.onerror = () => setStatus("Image load error");
+                img.src = URL.createObjectURL(file);
+                return;
+            }
+            fitToScreen();
+            setPanMode();
+        }
+
+        const loadFiles = async (files) => {
+            if (!files || files.length === 0) return;
+            imageQueue = Array.from(files);
+            currentIndex = 0;
+            await loadImageFromQueue(currentIndex);
+        };
+
+        fileInput.onchange = (e) => loadFiles(e.target.files);
+        cameraInput.onchange = (e) => loadFiles(e.target.files);
+
+        prevBtn.onclick = () => { if (currentIndex > 0) loadImageFromQueue(currentIndex - 1); };
+        nextBtn.onclick = () => { if (currentIndex < imageQueue.length - 1) loadImageFromQueue(currentIndex + 1); };
+
+        function autoRefresh() {
+            selectRect = null; saveBtn.disabled = true;
+            octx.clearRect(0,0, overlayCanvas.width, overlayCanvas.height);
+            if (originalImageData) ctx.putImageData(originalImageData, 0, 0);
+        }
+
+        function updateTransform() {
+            const dw = mainCanvas.width * currentScale, dh = mainCanvas.height * currentScale;
+            const ox = (viewer.clientWidth - dw)/2 + panX, oy = (viewer.clientHeight - dh)/2 + panY;
+            [mainCanvas, overlayCanvas].forEach(c => {
+                c.style.width = dw + 'px'; c.style.height = dh + 'px';
+                c.style.left = ox + 'px'; c.style.top = oy + 'px';
+            });
+        }
+
+        function fitToScreen() {
+            if (!mainCanvas.width) return;
+            currentScale = Math.min(viewer.clientWidth/mainCanvas.width, viewer.clientHeight/mainCanvas.height) * 0.88;
+            panX = 0; panY = 0; updateTransform();
+        }
+
+        const getPos = (e) => {
+            const rect = mainCanvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return { x: (clientX - rect.left) / currentScale, y: (clientY - rect.top) / currentScale };
+        };
+
+        function handleWheel(e) {
+            if (!originalImageData) return;
+            e.preventDefault();
+            const ZOOM_FACTOR = 1.1;
+            const factor = e.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR;
+            const oldScale = currentScale;
+            currentScale *= factor;
+            currentScale = Math.max(0.1, Math.min(currentScale, 20));
+            const pos = getPos(e);
+            panX -= pos.x * (currentScale - oldScale);
+            panY -= pos.y * (currentScale - oldScale);
+            updateTransform();
+        }
+
+        const handleStart = (e) => {
+            if (!originalImageData) return;
+            if (e.touches && e.touches.length === 2) {
+                isPinching = true; isDrawing = false;
+                lastTouchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+                lastPanX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                lastPanY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                return;
+            }
+            const pos = getPos(e);
+            if (mode === 'none') {
+                isPanning = true;
+                lastPanX = e.touches ? e.touches[0].clientX : e.clientX;
+                lastPanY = e.touches ? e.touches[0].clientY : e.clientY;
+            } else if (mode === 'pick_box' || mode === 'pick_brush') {
+                const data = ctx.getImageData(Math.floor(pos.x), Math.floor(pos.y), 1, 1).data;
+                eraserColor = `rgb(${data[0]},${data[1]},${data[2]})`;
+                colorIndicator.style.backgroundColor = eraserColor; colorIndicator.style.display = 'block';
+                mode = (mode === 'pick_box') ? 'box_erase' : 'brush_erase';
+                setActiveUI((mode === 'box_erase') ? 'erase' : 'brush');
+            } else {
+                isDrawing = true;
+                if (mode === 'brush_erase') {
+                    history.push(ctx.getImageData(0,0,mainCanvas.width,mainCanvas.height));
+                    document.getElementById('undoBtn').disabled = false;
+                }
+                startX = pos.x; startY = pos.y;
+            }
+            if (e.cancelable) e.preventDefault();
+        };
+
+        const handleMove = (e) => {
+            requestAnimationFrame(() => {
+                if (isPinching && e.touches && e.touches.length === 2) {
+                    const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+                    const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                    const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                    currentScale *= (dist / lastTouchDist);
+                    currentScale = Math.max(0.1, Math.min(currentScale, 20));
+                    panX += (midX - lastPanX); panY += (midY - lastPanY);
+                    lastTouchDist = dist; lastPanX = midX; lastPanY = midY;
+                    updateTransform(); return;
+                }
+                if (isPanning) {
+                    const cx = e.touches ? e.touches[0].clientX : e.clientX;
+                    const cy = e.touches ? e.touches[0].clientY : e.clientY;
+                    panX += (cx - lastPanX); panY += (cy - lastPanY);
+                    lastPanX = cx; lastPanY = cy;
+                    updateTransform(); return;
+                }
+                if (isDrawing) {
+                    const pos = getPos(e);
+                    if (mode === 'brush_erase') {
+                        const offset = isPC ? 0 : parseInt(stickSlider.value) / currentScale;
+                        const eraseX = pos.x; const eraseY = pos.y - offset;
+                        ctx.fillStyle = eraserColor; ctx.beginPath();
+                        ctx.arc(eraseX, eraseY, brushSlider.value / 2, 0, Math.PI * 2); ctx.fill();
+                        
+                        octx.clearRect(0,0, overlayCanvas.width, overlayCanvas.height);
+                        octx.strokeStyle = '#000000'; octx.setLineDash([]); octx.lineWidth = 2/currentScale;
+                        octx.beginPath(); octx.arc(eraseX, eraseY, brushSlider.value / 2, 0, Math.PI * 2); octx.stroke();
+
+                        if (!isPC && offset > 0) {
+                            octx.beginPath(); octx.moveTo(eraseX, eraseY + (brushSlider.value / 2));
+                            octx.lineTo(pos.x, pos.y); octx.strokeStyle = '#000000'; octx.lineWidth = 3/currentScale; octx.stroke();
+                        }
+                        octx.beginPath(); octx.arc(pos.x, pos.y, 10/currentScale, 0, Math.PI * 2);
+                        octx.fillStyle = '#FFC107'; octx.fill();
+                    } else {
+                        octx.clearRect(0,0, overlayCanvas.width, overlayCanvas.height);
+                        if (mode === 'crop') {
+                            octx.strokeStyle = '#FF0000'; octx.lineWidth = 5 / currentScale; octx.setLineDash([]);
+                        } else {
+                            octx.strokeStyle = '#000000'; octx.lineWidth = 2 / currentScale; octx.setLineDash([5, 5]);
+                        }
+                        selectRect = { x: Math.min(startX, pos.x), y: Math.min(startY, pos.y), w: Math.abs(pos.x - startX), h: Math.abs(pos.y - startY) };
+                        octx.strokeRect(selectRect.x, selectRect.y, selectRect.w, selectRect.h);
+                    }
+                }
+            });
+        };
+
+        const handleEnd = () => {
+            if (isDrawing && mode === 'crop' && selectRect && selectRect.w > 1) saveBtn.disabled = false;
+            if (isDrawing && mode === 'box_erase' && selectRect && selectRect.w > 1) {
+                history.push(ctx.getImageData(0,0,mainCanvas.width,mainCanvas.height));
+                document.getElementById('undoBtn').disabled = false;
+                ctx.fillStyle = eraserColor; ctx.fillRect(selectRect.x, selectRect.y, selectRect.w, selectRect.h);
+                selectRect = null; octx.clearRect(0,0, overlayCanvas.width, overlayCanvas.height);
+            }
+            isDrawing = false; isPinching = false; isPanning = false;
+            if (mode === 'brush_erase') octx.clearRect(0,0, overlayCanvas.width, overlayCanvas.height);
+        };
+
+        mainCanvas.addEventListener('touchstart', handleStart, {passive: false});
+        window.addEventListener('touchmove', handleMove, {passive: false});
+        window.addEventListener('touchend', handleEnd);
+        mainCanvas.addEventListener('mousedown', handleStart);
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleEnd);
+
+        if (isPC) {
+            mainCanvas.addEventListener('wheel', handleWheel, {passive: false});
+        }
+
+        const clearAll = () => {
+            imageQueue = []; currentIndex = 0; originalImageData = null;
+            currentFileDisplay = '';
+            history = []; selectRect = null; saveBtn.disabled = true;
+            colorIndicator.style.display = 'none';
+            ctx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+            octx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+            setPanMode();
+            setStatus();
+        };
+        if (clearBtn) clearBtn.onclick = clearAll;
+        clearSidebarBtn.onclick = clearAll;
+
+        // --- SPECIAL SAVE LOGIC FOR MEDIAN/APP ---
+        saveBtn.onclick = async () => {
+            if (!selectRect) return;
+            setStatus("Preparing image...");
+
+            const tmp = document.createElement('canvas');
+            tmp.width = selectRect.w;
+            tmp.height = selectRect.h;
+            const tctx = tmp.getContext('2d');
+            tctx.drawImage(mainCanvas, selectRect.x, selectRect.y, selectRect.w, selectRect.h, 0, 0, selectRect.w, selectRect.h);
+
+            // 1. Check if running in Median/GoNative App
+            if (isMedian) {
+                try {
+                    const dataUrl = tmp.toDataURL('image/png');
+                    // Trigger Native Share/Save Dialog
+                    // This bypasses the blocked "Blob" download in WebView
+                    window.location.href = 'gonative://share/shareImage?image=' + encodeURIComponent(dataUrl);
+                    
+                    setStatus("Image sent to Share/Save menu");
+                    selectRect = null;
+                    saveBtn.disabled = true;
+                    autoRefresh();
+                    setPanMode();
+                    return;
+                } catch (e) {
+                    console.error("Median app save error", e);
+                }
+            }
+
+            // 2. PC: Advanced Folder Save
+            let blob;
+            try {
+                blob = await new Promise(resolve => tmp.toBlob(resolve, 'image/png'));
+            } catch (err) { setStatus("Error creating blob"); return; }
+
+            if (isPC && 'showDirectoryPicker' in window) {
+                try {
+                    if (!directoryHandle) {
+                        setStatus("Please select a folder...");
+                        directoryHandle = await window.showDirectoryPicker({
+                            mode: 'readwrite', id: 'cropper_pc_save', startIn: 'pictures'
+                        });
+                    }
+                    let num = 1, fileName = '';
+                    while (true) {
+                        fileName = `${num}.png`;
+                        try { await directoryHandle.getFileHandle(fileName); num++; } 
+                        catch (e) { break; }
+                    }
+                    const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+                    const writable = await fileHandle.createWritable();
+                    await writable.write(blob);
+                    await writable.close();
+                    setStatus(`Saved: ${fileName}`);
+                    selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
+                    return; 
+                } catch (err) { if (err.name !== 'AbortError') console.log(err); }
+            }
+
+            // 3. FALLBACK: Direct Download (Standard Browser / Non-Median Mobile)
+            try {
+                let fileName = `${fallbackCounter}.png`;
+                const a = document.createElement('a');
+                let url;
+                if (isIOS) url = tmp.toDataURL('image/png');
+                else url = URL.createObjectURL(blob);
+                
+                a.href = url;
+                a.download = fileName;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                if (!isIOS) URL.revokeObjectURL(url);
+
+                fallbackCounter++;
+                localStorage.setItem('cropperFallbackCounter', fallbackCounter);
+                setStatus(`Downloaded: ${fileName}`);
+                selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
+            } catch (err) {
+                console.error('Save error:', err);
+                setStatus("Save failed");
+            }
+        };
+        // --- END SAVE LOGIC ---
+
+        function setPanMode() { mode = 'none'; setActiveUI('pan'); setStatus("Pan Mode"); }
+
+        resetBtn.onclick = () => { autoRefresh(); fitToScreen(); setPanMode(); colorIndicator.style.display = 'none'; };
+
+        document.getElementById('undoBtn').onclick = () => {
+            if (history.length) {
+                ctx.putImageData(history.pop(), 0, 0);
+                document.getElementById('undoBtn').disabled = history.length === 0;
+            }
+        };
+
+        toolButtons.pan.onclick = () => setPanMode();
+        toolButtons.crop.onclick = () => { mode = 'crop'; setActiveUI('crop'); setStatus("Crop Ready"); };
+        toolButtons.erase.onclick = () => { mode = 'pick_box'; setActiveUI('erase'); setStatus("Pick color..."); };
+        toolButtons.brush.onclick = () => { mode = 'pick_brush'; setActiveUI('brush'); setStatus("Pick brush color..."); };
+        document.getElementById('cameraBtn').onclick = () => cameraInput.click();
+        document.getElementById('openBtn').onclick = () => fileInput.click();
+    </script>
+</body>
+</html>
