@@ -187,28 +187,23 @@
         // HELPER TO CHECK MEDIAN ENVIRONMENT
         const isMedian = navigator.userAgent.indexOf('Median') > -1 || navigator.userAgent.indexOf('gonative') > -1;
 
-        // 1. REQUEST PERMISSIONS ON LOAD (FOR MEDIAN/GONATIVE)
+        // REQUEST PERMISSIONS ON LOAD (FOR MEDIAN/GONATIVE)
         if (isMedian) {
-            // Function to check and request permissions
             function requestStoragePermission() {
                 if (window.gonative && window.gonative.android && window.gonative.android.requestPermissions) {
                     window.gonative.android.requestPermissions({
-                        permissions: [
-                            "android.permission.WRITE_EXTERNAL_STORAGE", 
-                            "android.permission.READ_EXTERNAL_STORAGE"
-                        ]
+                        permissions: ["android.permission.WRITE_EXTERNAL_STORAGE", "android.permission.READ_EXTERNAL_STORAGE"]
                     });
                 }
             }
-            // Attempt immediately and after short delay to ensure bridge is ready
             requestStoragePermission();
             setTimeout(requestStoragePermission, 2000);
         }
 
         const setStatus = (instruction = '') => {
             const base = currentFileDisplay || "Tap 📂 or 📷 to begin";
-            const folderInfo = (isPC && directoryHandle) ? `Saving to: ${directoryHandle.name}` : '';
-            const parts = [base, folderInfo, instruction].filter(Boolean);
+            // No longer showing directoryHandle name as we are "asking" every time
+            const parts = [base, instruction].filter(Boolean);
             status.textContent = parts.length ? parts.join(' — ') : "Tap 📂 or 📷 to begin";
         };
 
@@ -460,7 +455,7 @@
         if (clearBtn) clearBtn.onclick = clearAll;
         clearSidebarBtn.onclick = clearAll;
 
-        // --- ROBUST SAVE LOGIC FOR MEDIAN/GONATIVE ---
+        // --- UPDATED SAVE LOGIC: ALWAYS ASK ---
         saveBtn.onclick = async () => {
             if (!selectRect) return;
             setStatus("Preparing image...");
@@ -471,73 +466,70 @@
             const tctx = tmp.getContext('2d');
             tctx.drawImage(mainCanvas, selectRect.x, selectRect.y, selectRect.w, selectRect.h, 0, 0, selectRect.w, selectRect.h);
 
-            // 1. MEDIAN/GONATIVE APP METHOD
-            if (isMedian) {
+            // 1. MEDIAN/GONATIVE: Open "Share" sheet
+            if (isMedian && window.gonative && window.gonative.share) {
                 try {
-                    // Check if the Bridge is ready
-                    if (window.gonative && window.gonative.share) {
-                        const dataUrl = tmp.toDataURL('image/png');
-                        // IMPORTANT: Send JUST the base64 data to avoid URL limits
-                        // Strip the "data:image/png;base64," prefix for clean handling if needed,
-                        // but generally shareImage handles the full string object better.
-                        
-                        window.gonative.share.shareImage({
-                            "image": dataUrl
-                        });
-                        
-                        setStatus("Opening Share/Save menu...");
-                        
-                        // Cleanup UI
-                        selectRect = null;
-                        saveBtn.disabled = true;
-                        autoRefresh();
-                        setPanMode();
-                        return;
-                    } else {
-                        // Bridge not ready, fallback to permission request then retry?
-                        // Or try the URL scheme one last time with a warning
-                        console.log("GoNative Bridge not found, attempting URL scheme...");
-                        const dataUrl = tmp.toDataURL('image/png');
-                        window.location.href = 'gonative://share/shareImage?image=' + encodeURIComponent(dataUrl);
-                        return;
-                    }
-                } catch (e) {
-                    console.error("Median app save error", e);
-                    setStatus("App Save Error");
-                }
+                    const dataUrl = tmp.toDataURL('image/png');
+                    window.gonative.share.shareImage({ "image": dataUrl });
+                    
+                    setStatus("Check Share/Save menu...");
+                    selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
+                    return;
+                } catch (e) { console.error(e); }
             }
 
-            // 2. PC: Advanced Folder Save
             let blob;
             try {
                 blob = await new Promise(resolve => tmp.toBlob(resolve, 'image/png'));
             } catch (err) { setStatus("Error creating blob"); return; }
 
-            if (isPC && 'showDirectoryPicker' in window) {
+            // 2. PC/ANDROID (Supported Browsers): Use "Save As" Picker
+            // This forces the "Where to save" dialog every time
+            if ('showSaveFilePicker' in window) {
                 try {
-                    if (!directoryHandle) {
-                        setStatus("Please select a folder...");
-                        directoryHandle = await window.showDirectoryPicker({
-                            mode: 'readwrite', id: 'cropper_pc_save', startIn: 'pictures'
-                        });
-                    }
-                    let num = 1, fileName = '';
-                    while (true) {
-                        fileName = `${num}.png`;
-                        try { await directoryHandle.getFileHandle(fileName); num++; } 
-                        catch (e) { break; }
-                    }
-                    const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
-                    const writable = await fileHandle.createWritable();
+                    const handle = await window.showSaveFilePicker({
+                        suggestedName: `${fallbackCounter}.png`,
+                        types: [{
+                            description: 'PNG Image',
+                            accept: {'image/png': ['.png']},
+                        }],
+                    });
+                    const writable = await handle.createWritable();
                     await writable.write(blob);
                     await writable.close();
-                    setStatus(`Saved: ${fileName}`);
+                    
+                    setStatus("Saved!");
+                    fallbackCounter++;
+                    localStorage.setItem('cropperFallbackCounter', fallbackCounter);
                     selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
-                    return; 
-                } catch (err) { if (err.name !== 'AbortError') console.log(err); }
+                    return;
+                } catch (err) {
+                    if (err.name !== 'AbortError') console.error(err);
+                    else { setStatus("Save cancelled"); return; }
+                }
+            }
+            
+            // 3. MOBILE WEB SHARE: Try to use Web Share API to "Save to Files"
+            if (navigator.share) {
+                const file = new File([blob], `${fallbackCounter}.png`, { type: 'image/png' });
+                try {
+                    await navigator.share({
+                        files: [file],
+                        title: 'Save Cropped Image',
+                    });
+                     // Success
+                    fallbackCounter++;
+                    localStorage.setItem('cropperFallbackCounter', fallbackCounter);
+                    selectRect = null; saveBtn.disabled = true; autoRefresh(); setPanMode();
+                    return;
+                } catch (err) {
+                     console.log("Share failed/cancelled", err);
+                     // If share fails, fall through to download
+                }
             }
 
-            // 3. FALLBACK: Direct Download
+            // 4. FALLBACK: Direct Download 
+            // (If browser settings are "Ask where to save", this will ask. If "Auto", it downloads)
             try {
                 let fileName = `${fallbackCounter}.png`;
                 const a = document.createElement('a');
